@@ -1,0 +1,46 @@
+{
+  "name": "vue3-middleware",
+  "version": "1.0.0",
+  "description": "A vue plugin that adds middlewares to your app routes",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaek-dev/vue3-middleware.git"
+  },
+  "peerDependencies": {
+    "vue": "^3.3.9",
+    "vue-router": "^4.3.2"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "tsup": "^8.1.0",
+    "typescript": "^5.3.2"
+  },
+  "keywords": [
+    "vue",
+    "vuejs",
+    "vue3",
+    "vue.js",
+    "vue",
+    "middleware",
+    "middleware",
+    "guards",
+    "navigation",
+    "guard"
+  ],
+  "author": "Jacob Eke",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jaek-dev/vue3-middleware/issues"
+  },
+  "homepage": "https://github.com/jaek-dev/vue3-middleware#readme"
+}
