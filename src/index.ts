@@ -1,116 +1,176 @@
+import type { Router } from "vue-router";
+import type { Middleware, MiddlewareContext, MiddlewareOptions, MiddlewareReturn } from "./types";
 import type { Plugin } from "vue";
-import type { RouteLocationNormalized, RouteLocationRaw, Router } from "vue-router";
 
-export type Middleware = (context: MiddlewareContext) => any;
-export type MiddlewareContext = {
-	to: RouteLocationNormalized;
-	from: RouteLocationNormalized;
-	cancel(): boolean;
-	next(): boolean;
-	redirect(to: RouteLocationRaw): RouteLocationRaw;
-};
-export type MiddlewareOptions = {
-	globalMiddlewares?: Middleware | Middleware[];
-};
+const isProduction = typeof process !== "undefined" && process.env && process.env.NODE_ENV === "production";
 
-export function createMiddleware(options: MiddlewareOptions = {}): Plugin {
-	return {
-		install(app, vueOptions: MiddlewareOptions = {}) {
-			const $router = app.config.globalProperties.$router;
-			if (!$router) {
-				console.warn("vue-router is required for vue3-middleware plugin to work.");
-				return;
-			}
+const isServerEnv = typeof window === "undefined";
 
-			registerPlugin($router, mergeOptions(options, vueOptions));
-		},
-	};
+// Tracks routers that already have a guard installed, so a duplicate
+// `app.use(createMiddleware(router, ...))` call (easy to trigger by
+// accident with HMR or multi-entry SSR setups) warns instead of silently
+// running the whole middleware chain twice per navigation.
+const installedRouters = new WeakSet<Router>();
+
+/**
+ * Creates the Vue plugin. The router must be passed explicitly rather than
+ * read off `app.config.globalProperties.$router`, because that property is
+ * only guaranteed to exist if `app.use(router)` ran first — an ordering
+ * dependency that's easy to get wrong, especially in SSR entry files where
+ * app/router are constructed fresh per request.
+ */
+export function createMiddleware<TExtra = Record<string, unknown>>(router: Router, options: MiddlewareOptions<TExtra> = {}): Plugin {
+    return {
+        install(_app, vueOptions: MiddlewareOptions<TExtra> = {}) {
+            registerPlugin(router, mergeOptions(options, vueOptions));
+        },
+    };
 }
 
-function mergeOptions(
-	option1: MiddlewareOptions = {},
-	option2: MiddlewareOptions = {}
-): MiddlewareOptions {
-	const mergedMiddlewares = [];
-
-	if (typeof option1 === "object" && option1.globalMiddlewares) {
-		mergedMiddlewares.push(
-			...(Array.isArray(option1.globalMiddlewares)
-				? option1.globalMiddlewares
-				: [option1.globalMiddlewares])
-		);
-	}
-
-	if (typeof option2 === "object" && option2.globalMiddlewares) {
-		mergedMiddlewares.push(
-			...(Array.isArray(option2.globalMiddlewares)
-				? option2.globalMiddlewares
-				: [option2.globalMiddlewares])
-		);
-	}
-
-	return {
-		globalMiddlewares: mergedMiddlewares,
-	};
+/** Typed authoring helper — purely for ergonomics/inference, does nothing at runtime. */
+export function defineMiddleware<TExtra = Record<string, unknown>>(fn: Middleware<TExtra>): Middleware<TExtra> {
+    return fn;
 }
 
-function registerPlugin(router: Router, options?: MiddlewareOptions) {
-	const global: Middleware[] = [];
-	if (typeof options === "object" && options.globalMiddlewares) {
-		global.push(
-			...(Array.isArray(options.globalMiddlewares)
-				? options.globalMiddlewares
-				: [options.globalMiddlewares])
-		);
-	}
+function mergeOptions<TExtra>(option1: MiddlewareOptions<TExtra> = {}, option2: MiddlewareOptions<TExtra> = {}): MiddlewareOptions<TExtra> {
+    const mergedMiddlewares: Middleware<TExtra>[] = [];
 
-	router.beforeEach(async (to, from) => {
-		const middlewaresToCall = [...global];
+    for (const option of [option1, option2]) {
+        if (option?.global) {
+            mergedMiddlewares.push(...(Array.isArray(option.global) ? option.global : [option.global]));
+        }
+    }
 
-		for (let i = 0; i < to.matched.length; i++) {
-			const route = to.matched[i];
-			const middlewares = route.meta.middlewares as Middleware[] | Middleware;
-			if (middlewares) {
-				const middleware = Array.isArray(middlewares) ? middlewares : [middlewares];
-				middlewaresToCall.push(...middleware);
-			}
-		}
-
-		let i = 0;
-		const context: MiddlewareContext = { to, from, cancel, next, redirect };
-		while (i < middlewaresToCall.length) {
-			const middleware = wrapMiddleware(middlewaresToCall[i], context);
-			const response = await middleware();
-			if (response !== true && response !== undefined) {
-				return response;
-			}
-			i++;
-		}
-	});
+    return {
+        global: mergedMiddlewares,
+        extra: { ...(option1.extra ?? {}), ...(option2.extra ?? {}) } as TExtra,
+        onError: option2.onError ?? option1.onError,
+        onExternalRedirect: option2.onExternalRedirect ?? option1.onExternalRedirect,
+        warnOnMissingReturn: option2.warnOnMissingReturn ?? option1.warnOnMissingReturn ?? true,
+    };
 }
 
-function redirect(to: RouteLocationRaw) {
-	return to;
+/**
+ * Registers the beforeEach guard on the router and returns an unregister
+ * function. Call the returned function to remove the guard — useful for
+ * Vite/webpack HMR (to avoid stacking duplicate guards on re-execution) and
+ * for tests that install/uninstall the plugin between cases.
+ */
+function registerPlugin<TExtra = Record<string, unknown>>(router: Router, options?: MiddlewareOptions<TExtra>): () => void {
+    if (installedRouters.has(router)) {
+        warn(
+            "createMiddleware/registerPlugin was called more than once for the same router instance. " +
+                "This will run your middleware chain multiple times per navigation. " +
+                "If this is intentional (e.g. HMR), make sure you call the unregister function " +
+                "returned by the previous registration first.",
+        );
+    } else {
+        installedRouters.add(router);
+    }
+
+    const global: Middleware<TExtra>[] = [];
+    if (options?.global) {
+        global.push(...(Array.isArray(options.global) ? options.global : [options.global]));
+    }
+    const extra = (options?.extra ?? {}) as TExtra;
+    const onError = options?.onError;
+    const onExternalRedirect = options?.onExternalRedirect;
+    const warnOnMissingReturn = options?.warnOnMissingReturn ?? true;
+
+    const unregister = router.beforeEach(async (to, from) => {
+        const middlewaresToCall: Middleware<TExtra>[] = [...global];
+
+        for (const route of to.matched) {
+            const middlewares = route.meta.middlewares as Middleware<TExtra>[] | Middleware<TExtra> | undefined;
+            if (middlewares) {
+                middlewaresToCall.push(...(Array.isArray(middlewares) ? middlewares : [middlewares]));
+            }
+        }
+
+        for (const middleware of middlewaresToCall) {
+            // `calledSignal` tracks whether cancel/redirect/externalRedirect was
+            // invoked during this middleware's execution, so we can warn if the
+            // middleware forgot to `return` it.
+            let calledSignal: MiddlewareReturn | typeof NOT_CALLED = NOT_CALLED;
+
+            const context: MiddlewareContext<TExtra> = {
+                to,
+                from,
+                isServer: isServerEnv,
+                cancel: () => {
+                    calledSignal = false;
+                    return false;
+                },
+                next: () => {
+                    calledSignal = true;
+                    return true;
+                },
+                redirect: (target) => {
+                    calledSignal = target;
+                    return target;
+                },
+                externalRedirect: (url, status = 302) => {
+                    calledSignal = false;
+                    if (!isServerEnv) {
+                        window.location.href = url;
+                    } else if (onExternalRedirect) {
+                        onExternalRedirect(url, status);
+                    } else {
+                        warn(
+                            `externalRedirect("${url}") was called during SSR but no "onExternalRedirect" ` +
+                                "handler was provided to createMiddleware/registerPlugin. The redirect will " +
+                                "have no effect on the server response.",
+                        );
+                    }
+                    return false;
+                },
+                ...extra,
+            };
+
+            try {
+                const response = await runMiddleware(middleware, context);
+
+                if (warnOnMissingReturn && !isProduction && calledSignal !== NOT_CALLED && response === undefined) {
+                    warn(
+                        "A middleware called cancel() / redirect() / externalRedirect() but did not " +
+                            "`return` the result. Navigation will proceed as if nothing happened. " +
+                            "Middleware must `return context.cancel()` (etc), not just call it.",
+                    );
+                }
+
+                if (response !== true && response !== undefined) {
+                    return response;
+                }
+            } catch (error) {
+                if (onError) {
+                    onError(error, to, from);
+                    // Treat a handled error as "block navigation" rather than letting
+                    // it fall through to router.onError. If you'd rather it still
+                    // reach router.onError, rethrow inside your onError handler.
+                    return false;
+                }
+                throw error;
+            }
+        }
+
+        return undefined;
+    });
+
+    return () => {
+        installedRouters.delete(router);
+        unregister();
+    };
 }
 
-function cancel() {
-	return false;
-}
-function next() {
-	return true;
+const NOT_CALLED = Symbol("not-called");
+
+async function runMiddleware<TExtra>(fn: Middleware<TExtra>, context: MiddlewareContext<TExtra>): Promise<MiddlewareReturn> {
+    return await fn(context);
 }
 
-function wrapMiddleware(fn: Middleware, context: MiddlewareContext) {
-	return function () {
-		try {
-			const result = fn(context);
-			if (result instanceof Promise) {
-				return result;
-			} else {
-				return Promise.resolve(result);
-			}
-		} catch (error) {
-			return Promise.reject(error);
-		}
-	};
+function warn(message: string) {
+    if (!isProduction) {
+        // eslint-disable-next-line no-console
+        console.warn(`[vue3-middleware] ${message}`);
+    }
 }
