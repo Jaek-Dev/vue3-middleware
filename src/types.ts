@@ -16,7 +16,7 @@ declare module "vue-router" {
  */
 export type MiddlewareReturn = boolean | RouteLocationRaw | Error | void;
 
-export type MiddlewareContext<TExtra = Record<string, unknown>> = {
+export type MiddlewareContext<TExtra extends Record<string, unknown> = {}> = {
     to: RouteLocationNormalized;
     from: RouteLocationNormalized;
     /** True when running during SSR (no `window`), false in the browser. */
@@ -43,7 +43,7 @@ export type MiddlewareContext<TExtra = Record<string, unknown>> = {
     externalRedirect(url: string, status?: number): false;
 } & TExtra;
 
-export type Middleware<TExtra = Record<string, unknown>> = (context: MiddlewareContext<TExtra>) => MiddlewareReturn | Promise<MiddlewareReturn>;
+export type Middleware<TExtra extends Record<string, unknown> = {}> = (context: MiddlewareContext<TExtra>) => MiddlewareReturn | Promise<MiddlewareReturn>;
 
 export type MiddlewareErrorHandler = (error: unknown, to: RouteLocationNormalized, from: RouteLocationNormalized) => void;
 
@@ -62,7 +62,7 @@ export type MiddlewareErrorHandler = (error: unknown, to: RouteLocationNormalize
  */
 export type ExternalRedirectHandler = (url: string, status: number) => void;
 
-export type MiddlewareOptions<TExtra = Record<string, unknown>> = {
+export type MiddlewareOptions<TExtra extends Record<string, unknown> = {}> = {
     global?: Middleware<TExtra> | Middleware<TExtra>[];
     /**
      * Extra data merged into every MiddlewareContext. Use this on the server

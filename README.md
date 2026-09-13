@@ -1,6 +1,6 @@
 # Vue3 Middleware
 
-`vue3-middleware` is a lightweight plugin for Vue 3 applications that provides middleware functionality. It allows you to add middleware functions that runs before each navigation, providing a powerful tool for handling authentication, authorization, logging, and other concerns. With just a few simple steps, you can add this plugin to your vue application.
+`vue3-middleware` is a lightweight plugin for Vue 3 applications that provides middleware functionality. It allows you to add middleware functions that run before each navigation, providing a powerful tool for handling authentication, authorization, logging, and other concerns. With just a few simple steps, you can add this plugin to your vue application.
 
 ### Installation
 
@@ -22,6 +22,8 @@ yarn add vue3-middleware
 
 First, you need to set up the middleware in your Vue 3 application. Import `createMiddleware` from `vue3-middleware` and set it up in your main application file (typically main.js or main.ts).
 
+`createMiddleware` requires the `router` instance as its first argument — it's passed explicitly rather than read off the app, because that avoids relying on `app.use(router)` having already run (an ordering issue that's easy to hit in SSR entry files where the app/router are constructed fresh per request).
+
 **Note**: Registered global middlewares will run for every navigation.
 
 ```ts
@@ -32,15 +34,15 @@ import removeTrailingSlash from './middlewares/removeTrailingSlash';
 import router from './router';
 
 const app = createApp(App);
-const middleware = createMiddleware();
+const middleware = createMiddleware(router);
 
 // OR with options
-// const middleware = createMiddleware({
-//     globalMiddlewares: [
+// const middleware = createMiddleware(router, {
+//     global: [
 //         removeTrailingSlash
 //     ],
 //     // OR
-//     // globalMiddlewares: removeTrailingSlash
+//     // global: removeTrailingSlash
 // });
 
 // Registration here
@@ -48,14 +50,13 @@ app.use(middleware);
 
 // OR register with options
 // app.use(middleware, {
-//     globalMiddlewares: [
+//     global: [
 //         removeTrailingSlash
 //     ],
 //     // OR
-//     // globalMiddlewares: removeTrailingSlash
+//     // global: removeTrailingSlash
 // });
 
-// Use middleware with the router
 app.use(router);
 
 app.mount('#app');
@@ -63,56 +64,60 @@ app.mount('#app');
 
 #### Defining Middleware
 
-You can define middleware functions that will be executed before route changes. Middleware functions receive the `to`, `from`, `next`, `cancel` and `redirect` parameters, similar to Vue Router navigation guards.
+You can define middleware functions that will be executed before route changes. Middleware functions receive a context with `to`, `from`, `isServer`, `next`, `cancel`, `redirect` and `externalRedirect`, similar to Vue Router navigation guards.
+
+**Important**: if a middleware calls `cancel()`, `redirect()` or `externalRedirect()`, you must `return` the result. These calls don't take effect on their own — the return value is what tells the middleware chain (and vue-router) what to do. Calling one without returning it is a common footgun; by default the plugin warns via `console.warn` in development when it detects this (see `warnOnMissingReturn` below).
+
+You can optionally wrap middleware in the `defineMiddleware` helper — it's purely for type inference and does nothing at runtime.
 
 ```ts
 // middleware/auth.ts
 import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function auth({ to, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ to, next, redirect }) => {
     const user = useUser();
     if (to.meta.requiresAuth && !user.isLoggedIn) {
         return redirect({ name: 'login' });
-    } 
+    }
     return next();
-}
+});
 
 
 // middleware/guest.ts
 import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function guest({ from, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ from, next, redirect }) => {
     const user = useUser();
     if (user.isLoggedIn) {
         return redirect(from);
-    } 
+    }
     return next();
-}
+});
 
 
 // middleware/removeTrailingSlash.ts
-import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function removeTrailingSlash({ to, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ to, next, redirect }) => {
     if (to.path.length > 1 && to.path.endsWith("/")) {
         return redirect(to.path.substring(0, to.path.length - 1));
     }
     return next();
-}
+});
 
 
 // middleware/noLeaveNoTransfer.ts
-import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function noLeaveNoTransfer({ cancel }: MiddlewareContext) {
+export default defineMiddleware(({ cancel }) => {
     // Explicitly cancel the navigation and terminate
     return cancel();
-}
+});
 ```
+
+`redirect` performs an internal (same-app) redirect resolved by vue-router, and can't navigate cross-origin. For cross-origin / full-page redirects, use `externalRedirect(url, status?)` instead — in the browser it sets `window.location.href`; during SSR it calls the `onExternalRedirect` handler you provide to `createMiddleware` (see [Options](#options) below).
 
 #### Applying Middleware to Routes
 
@@ -182,6 +187,50 @@ export default router;
 
 **Note**: A middleware that's defined on parent route will also guard children routes, so no you don't have to define it again on the children routes.
 
+#### Options
+
+`createMiddleware(router, options)` (and the second argument to `app.use(middleware, options)`) accepts:
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `global` | `Middleware \| Middleware[]` | Middleware that runs on every navigation, before any route-level middleware. |
+| `extra` | `object` | Extra data merged into every `MiddlewareContext`. Handy on the server to inject per-request data (`req`, `res`, cookies, auth token, etc.) so middleware doesn't need to reach for globals. See [Typed extra context](#typed-extra-context) below. |
+| `onError` | `(error, to, from) => void` | Called whenever a middleware throws or its promise rejects. Wire this to your error tracker. If omitted, the error is rethrown and surfaces via `router.onError`. |
+| `onExternalRedirect` | `(url, status) => void` | Required if any middleware calls `context.externalRedirect()` during SSR. Wire it to your server framework's redirect mechanism (Express `res.writeHead`, h3/Nitro `sendRedirect`, a Cloudflare Worker `Response`, etc). Not needed for client-only apps. |
+| `warnOnMissingReturn` | `boolean` (default `true`) | Warns via `console.warn` in non-production builds if a middleware calls `cancel()` / `redirect()` / `externalRedirect()` but forgets to `return` the result. Set to `false` to disable. |
+
+Options passed to `createMiddleware(router, options)` and to `app.use(middleware, options)` are merged — `global` middlewares are concatenated, `extra` is shallow-merged, and the rest fall back from the `app.use` options to the `createMiddleware` options.
+
+#### Typed extra context
+
+If you use the `extra` option, pass its type as a generic to `createMiddleware` and `defineMiddleware` so it's available on `context` with full type-safety:
+
+```ts
+// main.ts
+import { createMiddleware } from 'vue3-middleware';
+import router from './router';
+
+type ExtraContext = { userId: string | null };
+
+const middleware = createMiddleware<ExtraContext>(router, {
+    extra: { userId: null },
+});
+```
+
+```ts
+// middleware/auth.ts
+import { defineMiddleware } from 'vue3-middleware';
+
+type ExtraContext = { userId: string | null };
+
+export default defineMiddleware<ExtraContext>(({ userId, next, redirect }) => {
+    if (!userId) {
+        return redirect({ name: 'login' });
+    }
+    return next();
+});
+```
+
 ### Example
 
 Here's a full example that combines the setup, middleware definition, and route application.
@@ -195,10 +244,10 @@ import removeTrailingSlash from './middlewares/removeTrailingSlash';
 import router from './router';
 
 const app = createApp(App);
-const middleware = createMiddleware();
+const middleware = createMiddleware(router);
 
 app.use(middleware, {
-    globalMiddlewares: [
+    global: [
         removeTrailingSlash
     ],
 });
@@ -209,49 +258,47 @@ app.mount('#app')
 
 // middleware/auth.ts
 import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function auth({ to, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ to, next, redirect }) => {
     const user = useUser();
     if (to.meta.requiresAuth && !user.isLoggedIn) {
         return redirect({ name: 'login' });
-    } 
+    }
     return next();
-}
+});
 
 
 // middleware/guest.ts
 import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function guest({ from, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ from, next, redirect }) => {
     const user = useUser();
     if (user.isLoggedIn) {
         return redirect(from);
-    } 
+    }
     return next();
-}
+});
 
 
 // middleware/removeTrailingSlash.ts
-import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function removeTrailingSlash({ to, next, redirect }: MiddlewareContext) {
+export default defineMiddleware(({ to, next, redirect }) => {
     if (to.path.length > 1 && to.path.endsWith("/")) {
         return redirect(to.path.substring(0, to.path.length - 1));
     }
     return next();
-}
+});
 
 
 // middleware/noLeaveNoTransfer.ts
-import { useUser } from '@/stores/user.ts';
-import type { MiddlewareContext } from 'vue3-middleware';
+import { defineMiddleware } from 'vue3-middleware';
 
-export default function noLeaveNoTransfer({ cancel }: MiddlewareContext) {
+export default defineMiddleware(({ cancel }) => {
     return cancel();
-}
+});
 
 
 // router/index.ts

@@ -3,7 +3,6 @@ import type { Middleware, MiddlewareContext, MiddlewareOptions, MiddlewareReturn
 import type { Plugin } from "vue";
 
 const isProduction = typeof process !== "undefined" && process.env && process.env.NODE_ENV === "production";
-
 const isServerEnv = typeof window === "undefined";
 
 // Tracks routers that already have a guard installed, so a duplicate
@@ -19,7 +18,7 @@ const installedRouters = new WeakSet<Router>();
  * dependency that's easy to get wrong, especially in SSR entry files where
  * app/router are constructed fresh per request.
  */
-export function createMiddleware<TExtra = Record<string, unknown>>(router: Router, options: MiddlewareOptions<TExtra> = {}): Plugin {
+export function createMiddleware<TExtra extends Record<string, unknown>>(router: Router, options: MiddlewareOptions<TExtra> = {}): Plugin {
     return {
         install(_app, vueOptions: MiddlewareOptions<TExtra> = {}) {
             registerPlugin(router, mergeOptions(options, vueOptions));
@@ -28,11 +27,11 @@ export function createMiddleware<TExtra = Record<string, unknown>>(router: Route
 }
 
 /** Typed authoring helper — purely for ergonomics/inference, does nothing at runtime. */
-export function defineMiddleware<TExtra = Record<string, unknown>>(fn: Middleware<TExtra>): Middleware<TExtra> {
+export function defineMiddleware<TExtra extends Record<string, unknown>>(fn: Middleware<TExtra>): Middleware<TExtra> {
     return fn;
 }
 
-function mergeOptions<TExtra>(option1: MiddlewareOptions<TExtra> = {}, option2: MiddlewareOptions<TExtra> = {}): MiddlewareOptions<TExtra> {
+function mergeOptions<TExtra extends Record<string, unknown>>(option1: MiddlewareOptions<TExtra> = {}, option2: MiddlewareOptions<TExtra> = {}): MiddlewareOptions<TExtra> {
     const mergedMiddlewares: Middleware<TExtra>[] = [];
 
     for (const option of [option1, option2]) {
@@ -56,7 +55,7 @@ function mergeOptions<TExtra>(option1: MiddlewareOptions<TExtra> = {}, option2: 
  * Vite/webpack HMR (to avoid stacking duplicate guards on re-execution) and
  * for tests that install/uninstall the plugin between cases.
  */
-function registerPlugin<TExtra = Record<string, unknown>>(router: Router, options?: MiddlewareOptions<TExtra>): () => void {
+function registerPlugin<TExtra extends Record<string, unknown>>(router: Router, options?: MiddlewareOptions<TExtra>): () => void {
     if (installedRouters.has(router)) {
         warn(
             "createMiddleware/registerPlugin was called more than once for the same router instance. " +
@@ -129,7 +128,6 @@ function registerPlugin<TExtra = Record<string, unknown>>(router: Router, option
 
             try {
                 const response = await runMiddleware(middleware, context);
-
                 if (warnOnMissingReturn && !isProduction && calledSignal !== NOT_CALLED && response === undefined) {
                     warn(
                         "A middleware called cancel() / redirect() / externalRedirect() but did not " +
@@ -164,7 +162,7 @@ function registerPlugin<TExtra = Record<string, unknown>>(router: Router, option
 
 const NOT_CALLED = Symbol("not-called");
 
-async function runMiddleware<TExtra>(fn: Middleware<TExtra>, context: MiddlewareContext<TExtra>): Promise<MiddlewareReturn> {
+async function runMiddleware<TExtra extends Record<string, unknown>>(fn: Middleware<TExtra>, context: MiddlewareContext<TExtra>): Promise<MiddlewareReturn> {
     return await fn(context);
 }
 

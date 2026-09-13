@@ -1,6 +1,6 @@
 {
   "name": "vue3-middleware",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "A vue plugin that adds middlewares to your app routes",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
